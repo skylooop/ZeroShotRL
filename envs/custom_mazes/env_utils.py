@@ -54,6 +54,7 @@ def plot_policy(env, dataset, N=14, M=20, fig=None, ax=None, random=False, title
         ax.set_title(title)
         
     return fig, ax
+
 def value_image_fourrooms(env, dataset, value_fn, N, M, action_fn=None, **kwargs):
     """
     Visualize the value function.

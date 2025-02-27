@@ -19,21 +19,20 @@ class ForwardBackwardAgent(flax.struct.PyTreeNode):
     def fb_loss(self, batch, z_latent, grad_params, rng):
         rng, sample_rng = jax.random.split(rng)
     
-        z_latent = jax.lax.stop_gradient(z_latent)
         # Target M for continuous actor
         if not self.config['discrete']:
             # Target M
             next_dist = self.network.select('actor')(batch['next_observations'], z_latent)
             next_actions = next_dist.sample(seed=sample_rng)
             target_F1, target_F2 = self.network.select('target_f_value')(batch['next_observations'], next_actions, z_latent)
-            target_B = self.network.select('target_b_value')(batch['next_observations'])
+            target_B = self.network.select('target_b_value')(batch['value_goals'])
             target_M1 = target_F1 @ target_B.T
             target_M2 = target_F2 @ target_B.T
             target_M = jnp.minimum(target_M1, target_M2)
             
             # Cur M
             F1, F2 = self.network.select('f_value')(batch['observations'], batch['actions'], z_latent, params=grad_params)
-            B = self.network.select('b_value')(batch['next_observations'], params=grad_params)
+            B = self.network.select('b_value')(batch['value_goals'], params=grad_params)
             M1 = F1 @ B.T
             M2 = F2 @ B.T
         else:
@@ -44,9 +43,6 @@ class ForwardBackwardAgent(flax.struct.PyTreeNode):
             
             if self.config['boltzmann']:
                 pass
-                # pi = F.softmax(next_Q / self.cfg.temp, dim=-1)
-                # target_F1, target_F2 = [torch.einsum("sa, sda -> sd", pi, Fi) for Fi in [target_F1, target_F2]] # batch x z_dim
-                # next_Q = torch.einsum("sa, sa -> s", pi, next_Q)
             else:
                 next_action = next_Q.argmax(-1, keepdims=True)
                 next_idx = next_action[:, None, :].repeat(repeats=z_latent.shape[-1], axis=1).astype('int8')
@@ -69,28 +65,27 @@ class ForwardBackwardAgent(flax.struct.PyTreeNode):
         off_diag = ~I
 
         fb_offdiag = 0.5 * sum(jnp.pow((M - self.config['discount'] * target_M)[off_diag], 2).mean() for M in [M1, M2])
-        #fb_diag = -sum(jnp.diag((M - self.config['discount'] * target_M)).mean() for M in [M1, M2])
         fb_diag = -sum(jnp.diag(M).mean() for M in [M1, M2])
         fb_loss = fb_diag + fb_offdiag
         
         # Orthonormality loss
-        cov_b = B @ jax.lax.stop_gradient(B.T)
+        cov_b = B @ B.T
         ort_loss_diag = -2 * jnp.diag(cov_b).mean()
         ort_loss_offdiag = jnp.pow(cov_b[off_diag], 2).mean()
         ort_b_loss = ort_loss_diag + ort_loss_offdiag
-        if len(B.shape) == 2:
-            B = B[None, ...]
-        logits = jnp.einsum('eik,ejk->ije', B, B)# / jnp.sqrt(B.shape[-1]) 
-        contrastive_loss = jax.vmap(
-            lambda _logits: optax.sigmoid_binary_cross_entropy(logits=_logits, labels=I),
-            in_axes=-1,
-            out_axes=-1,
-        )(logits)
-        ort_b_loss = jnp.mean(contrastive_loss)
+        # if len(B.shape) == 2:
+        #     B = B[None, ...]
+        # logits = jnp.einsum('eik,ejk->ije', B, B)# / jnp.sqrt(B.shape[-1]) 
+        # contrastive_loss = jax.vmap(
+        #     lambda _logits: optax.sigmoid_binary_cross_entropy(logits=_logits, labels=I),
+        #     in_axes=-1,
+        #     out_axes=-1,
+        # )(logits)
+        # ort_b_loss = jnp.mean(contrastive_loss)
         total_loss = fb_loss + ort_b_loss
         
         correct_fb = jnp.argmax(M1, axis=1) == jnp.argmax(I, axis=1)
-        correct_ort = jnp.argmax(logits, axis=1) == jnp.argmax(I, axis=1)
+        #correct_ort = jnp.argmax(logits, axis=1) == jnp.argmax(I, axis=1)
         
         return total_loss, {
             "contrastive_fb_loss": fb_loss, 
@@ -100,7 +95,7 @@ class ForwardBackwardAgent(flax.struct.PyTreeNode):
             "ort_b_loss": ort_b_loss,
             # "ort_loss_diag": ort_loss_diag,
             # "ort_loss_offdiag": ort_loss_offdiag,
-            "correct_ort": jnp.mean(correct_ort),
+            #"correct_ort": jnp.mean(correct_ort),
             # FB LOSS
             "categorical_accuracy_M": jnp.mean(correct_fb),
             "fb_offdiag_loss": fb_offdiag,
@@ -119,8 +114,7 @@ class ForwardBackwardAgent(flax.struct.PyTreeNode):
         Q1 = (F1 * z_latent).sum(-1)
         Q2 = (F2 * z_latent).sum(-1)
         Q = jnp.minimum(Q1, Q2)
-        actor_loss = (0.3 * log_probs - Q).mean()
-        #actor_loss = -Q.mean()
+        actor_loss = (1.0 * log_probs - Q).mean()
         return actor_loss, {
             'mean_action': actions.mean(),
             'actor_q': Q.mean(),
@@ -185,7 +179,7 @@ class ForwardBackwardAgent(flax.struct.PyTreeNode):
     def sample_mixed_z(self, batch, latent_dim, key):
         batch_size = batch['observations'].shape[0]
         z = self.sample_z(batch_size, latent_dim, key)
-        b_goals = self.network.select('b_value')(goal=batch['actor_goals'])
+        b_goals = self.network.select('b_value')(goal=batch['next_observations'])
         mask = jax.random.uniform(key, shape=(batch_size, 1)) < self.config['z_mix_ratio']
         z = jnp.where(mask, b_goals, z)
         return z

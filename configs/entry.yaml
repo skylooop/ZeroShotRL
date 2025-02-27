@@ -11,7 +11,7 @@ save_dir: experiment_logs/
 # RL
 train_steps: 1_000_000
 log_interval: 5_000
-eval_interval: 100_000
+eval_interval: 10_000
 eval_tasks: null
 eval_episodes: 5 # 50 for true eval
 eval_temperature: 0
