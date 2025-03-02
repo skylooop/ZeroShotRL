@@ -1,0 +1,23 @@
+program: main.py
+
+method: random
+
+metric:
+  name: evaluation/overall_success
+  goal: maximize
+
+parameters:
+  agent.z_dim:
+    values: [100, 128, 150]
+  agent.lr:
+    values: [1e-4, 3e-4]
+  agent.tau:
+    values: [0.01, 0.005]
+  
+command:
+  - ${env}
+  - python
+  - ${program}
+  - "--disable_jit=False"
+  - "experiment=cont.yaml"
+  - ${args_no_hyphens}
